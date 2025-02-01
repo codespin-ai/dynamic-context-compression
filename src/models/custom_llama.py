@@ -120,11 +120,13 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             dim=1,
         )
 
-        # Precise KV cache slicing
+        # More precise KV cache pruning
         if hasattr(self, "past_key_values") and self.past_key_values is not None:
             self.past_key_values = tuple(
                 tuple(
-                    layer_cache[:, : marker_indices["start"][0], :]  # Slice precisely
+                    layer_cache[
+                        :, : marker_indices["start"][0], :
+                    ]  # Precisely slice before reasoning
                     for layer_cache in layer_pair
                 )
                 for layer_pair in self.past_key_values

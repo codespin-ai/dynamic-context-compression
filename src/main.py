@@ -89,12 +89,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Construct prompt with reasoning context
+    # Construct initial prompt with reasoning context
     full_prompt = f"""Task: {args.prompt}
 
-You must solve this systematically:
-1. Break down the problem
-2. Develop a step-by-step solution strategy
+Your task is to reason about the solution:
+1. Break down the problem, and solve it step by step.
+2. Otherwise you must try all possibilities and combinations
 3. Use these EXACT special tokens:
    - <REASONING_START> at reasoning beginning
    - <REASONING_SUCCESS_START> if solution found
@@ -103,74 +103,119 @@ You must solve this systematically:
    - <REASONING_FAILURE_END> after failure explanation
    - <REASONING_END> at reasoning end
 
+Let's start.
 <REASONING_START>
-Let's solve: {args.prompt}
 """
 
-    # Tokenize input
+    # Tokenize initial input
     inputs = tokenizer(
         full_prompt, return_tensors="pt", padding=True, add_special_tokens=True
     )
 
-    # Generate text with streaming
+    # Initialize generation variables
     generated_ids = inputs.input_ids
     attention_mask = inputs.attention_mask
-
-    # Store original prompt for special token detection
     original_prompt = full_prompt
 
-    print("Reasoning Process:")
-    for _ in range(200):  # Limit generation to prevent infinite loops
-        outputs = model.generate(
-            generated_ids,
-            max_new_tokens=1,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
-            pad_token_id=tokenizer.eos_token_id,
-            attention_mask=attention_mask,
-        )
+    # Failure recovery mechanism
+    failure_recovery_attempts = 0
+    max_failure_recovery_attempts = 3
 
-        # Get the newly generated token
-        new_token = outputs[0, generated_ids.shape[1] :]
+    while failure_recovery_attempts < max_failure_recovery_attempts:
+        print(f"\nReasoning Attempt {failure_recovery_attempts + 1}:")
 
-        # Decode and print the new token
-        new_token_text = tokenizer.decode(new_token, skip_special_tokens=False)
-        print(new_token_text, end="", flush=True)
+        # Generation loop
+        for _ in range(500):  # Limit generation to prevent infinite loops
+            outputs = model.generate(
+                generated_ids,
+                max_new_tokens=1,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=tokenizer.eos_token_id,
+                attention_mask=attention_mask,
+            )
 
-        # Update generated_ids for next iteration
-        generated_ids = outputs
+            # Get the newly generated token
+            new_token = outputs[0, generated_ids.shape[1] :]
 
-        # Decode full output
-        decoded_output = tokenizer.decode(generated_ids[0])
+            # Decode and print the new token
+            new_token_text = tokenizer.decode(new_token, skip_special_tokens=False)
+            print(new_token_text, end="", flush=True)
 
-        # Advanced special token detection
-        if is_newly_generated_special_token(
-            decoded_output, original_prompt, special_tokens
-        ):
-            # Determine which special token triggered the end
-            if "<REASONING_SUCCESS_END>" in decoded_output:
-                # Extract solution between success markers
-                solution_start = decoded_output.find("<REASONING_SUCCESS_START>") + len(
-                    "<REASONING_SUCCESS_START>"
-                )
-                solution_end = decoded_output.find("<REASONING_SUCCESS_END>")
-                solution = decoded_output[solution_start:solution_end].strip()
-                print(f"\n\nFinal Solution:\n{solution}")
+            # Update generated_ids for next iteration
+            generated_ids = outputs
+
+            # Decode full output
+            decoded_output = tokenizer.decode(generated_ids[0])
+
+            # Advanced special token detection
+            if is_newly_generated_special_token(
+                decoded_output, original_prompt, special_tokens
+            ):
+                if "<REASONING_SUCCESS_END>" in decoded_output:
+                    # Extract solution between success markers
+                    solution_start = decoded_output.find(
+                        "<REASONING_SUCCESS_START>"
+                    ) + len("<REASONING_SUCCESS_START>")
+                    solution_end = decoded_output.find("<REASONING_SUCCESS_END>")
+                    solution = decoded_output[solution_start:solution_end].strip()
+                    print(f"\n\nFinal Solution:\n{solution}")
+                    return  # Exit main function
+
+                elif "<REASONING_FAILURE_END>" in decoded_output:
+                    # Failure Recovery Mechanism
+                    failure_start = decoded_output.find(
+                        "<REASONING_FAILURE_START>"
+                    ) + len("<REASONING_FAILURE_START>")
+                    failure_end = decoded_output.find("<REASONING_FAILURE_END>")
+                    failure_explanation = decoded_output[
+                        failure_start:failure_end
+                    ].strip()
+
+                    print(
+                        f"\n\nReasoning Failure (Attempt {failure_recovery_attempts + 1}):\n{failure_explanation}"
+                    )
+
+                    # Prepare recovery prompt
+                    recovery_prompt = f"""
+Previous attempt failed. Here's the failure explanation:
+{failure_explanation}
+
+Let's try a different approach to solve: {args.prompt}
+
+<REASONING_START>
+Recovering from previous failure. New strategy:
+"""
+
+                    # Use model's custom method to prune and reset context
+                    recovered_input_ids, recovered_attention_mask = (
+                        model.replace_reasoning_context(generated_ids, tokenizer)
+                    )
+
+                    # Append recovery prompt to pruned context
+                    recovery_input = tokenizer(
+                        recovery_prompt, return_tensors="pt", add_special_tokens=True
+                    )
+
+                    # Combine pruned context with recovery prompt
+                    generated_ids = torch.cat(
+                        [recovered_input_ids, recovery_input.input_ids], dim=1
+                    )
+                    attention_mask = torch.cat(
+                        [recovered_attention_mask, recovery_input.attention_mask], dim=1
+                    )
+
+                    failure_recovery_attempts += 1
+                    break  # Restart generation loop
+
+            # Stop if EOS token is generated
+            if tokenizer.eos_token_id in outputs[0]:
                 break
 
-            elif "<REASONING_FAILURE_END>" in decoded_output:
-                # Extract failure explanation
-                failure_start = decoded_output.find("<REASONING_FAILURE_START>") + len(
-                    "<REASONING_FAILURE_START>"
-                )
-                failure_end = decoded_output.find("<REASONING_FAILURE_END>")
-                failure_explanation = decoded_output[failure_start:failure_end].strip()
-                print(f"\n\nReasoning Failure:\n{failure_explanation}")
-                break
-
-        # Stop if EOS token is generated
-        if tokenizer.eos_token_id in outputs[0]:
+        # Exit if max recovery attempts reached
+        if failure_recovery_attempts >= max_failure_recovery_attempts:
+            print("\nFailed to solve the problem after multiple attempts.")
             break
 
     print("\n")  # New line after response
