@@ -1,20 +1,18 @@
-[project]
+[tool.poetry]
 name = "dynamic-context-compression"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "Jeswin Kumar",email = "jeswinpk@agilehead.com"}
-]
+authors = ["Jeswin Kumar <jeswinpk@agilehead.com>"]
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "torch (>=2.6.0,<3.0.0)",
-    "transformers (>=4.48.2,<5.0.0)",
-    "accelerate (>=1.3.0,<2.0.0)",
-    "bitsandbytes (>=0.45.1,<0.46.0)",
-    "python-dotenv (>=1.0.1,<2.0.0)"
-]
+packages = [{include = "src"}]  # Ensure this matches your package directory
 
+[tool.poetry.dependencies]
+python = ">=3.12"
+torch = ">=2.6.0,<3.0.0"
+transformers = ">=4.48.2,<5.0.0"
+accelerate = ">=1.3.0,<2.0.0"
+bitsandbytes = ">=0.45.1,<0.46.0"
+python-dotenv = ">=1.0.1,<2.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

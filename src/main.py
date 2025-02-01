@@ -138,6 +138,7 @@ def main():
                 top_p=0.9,
                 pad_token_id=tokenizer.eos_token_id,
                 attention_mask=attention_mask,
+                repetition_penalty=1.0,
             )
 
             # Get the newly generated token

@@ -57,83 +57,84 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         """
         Replace reasoning context with summary.
 
-        Precise steps:
-        1. Detect reasoning markers
-        2. Extract summary
-        3. Slice input and KV cache
-        4. Prepare for next generation phase
+        The function:
+        1. Decodes the token ids into text (preserving special tokens).
+        2. Locates the reasoning block defined by <REASONING_START> and <REASONING_END>.
+        3. Within that block, if a failure or success marker is present,
+           extracts the text between the corresponding markers as the summary.
+        4. Removes the entire reasoning block and, if the summary is non-empty, inserts it.
+        5. Re-tokenizes the resulting text and prunes the KV cache accordingly.
 
         Args:
-            input_ids (torch.Tensor): Input token IDs
-            tokenizer: Tokenizer for encoding/decoding
+            input_ids (torch.Tensor): Input token IDs.
+            tokenizer: Tokenizer for encoding/decoding.
 
         Returns:
-            Tuple of modified input_ids and attention_mask
+            Tuple[torch.Tensor, torch.Tensor]: Modified input_ids and corresponding attention_mask.
         """
-        # Convert special tokens to IDs for precise detection
-        token_ids = {
-            "start": tokenizer.convert_tokens_to_ids(self.config.reasoning_start_token),
-            "failure_start": tokenizer.convert_tokens_to_ids(
-                self.config.reasoning_failure_start_token
-            ),
-            "failure_end": tokenizer.convert_tokens_to_ids(
-                self.config.reasoning_failure_end_token
-            ),
-            "success_start": tokenizer.convert_tokens_to_ids(
-                self.config.reasoning_success_start_token
-            ),
-            "success_end": tokenizer.convert_tokens_to_ids(
-                self.config.reasoning_success_end_token
-            ),
-            "end": tokenizer.convert_tokens_to_ids(self.config.reasoning_end_token),
-        }
+        # Decode the input while preserving special tokens.
+        decoded = tokenizer.decode(input_ids[0], skip_special_tokens=False)
 
-        # Find precise indices of all markers
-        marker_indices = {
-            name: torch.where(input_ids == token_id)[1]
-            for name, token_id in token_ids.items()
-        }
+        start_token = self.config.reasoning_start_token
+        end_token = self.config.reasoning_end_token
 
-        # Validate marker presence and sequence
-        if not all(len(indices) > 0 for indices in marker_indices.values()):
+        start_idx = decoded.find(start_token)
+        end_idx = decoded.find(end_token)
+        if start_idx == -1 or end_idx == -1:
+            # If the reasoning markers are not found, return original tensors.
             return input_ids, torch.ones_like(input_ids, dtype=torch.long)
 
-        # Determine reasoning outcome and extract summary
-        if marker_indices["failure_start"]:
-            start_idx = marker_indices["failure_start"][0]
-            end_idx = marker_indices["failure_end"][0]
-            summary_tokens = input_ids[0, start_idx + 1 : end_idx]
-        elif marker_indices["success_start"]:
-            start_idx = marker_indices["success_start"][0]
-            end_idx = marker_indices["success_end"][0]
-            summary_tokens = input_ids[0, start_idx + 1 : end_idx]
-        else:
-            return input_ids, torch.ones_like(input_ids, dtype=torch.long)
+        # The reasoning block (from start token up to and including end token).
+        block = decoded[start_idx : end_idx + len(end_token)]
 
-        # Precise input reconstruction
-        new_input_ids = torch.cat(
-            [
-                input_ids[:, : marker_indices["start"][0]],  # Before reasoning
-                summary_tokens,  # Extracted summary
-                input_ids[:, marker_indices["end"][0] + 1 :],  # After reasoning
-            ],
-            dim=1,
+        summary = ""
+        # Check for a failure summary.
+        if (
+            self.config.reasoning_failure_start_token in block
+            and self.config.reasoning_failure_end_token in block
+        ):
+            fs = block.find(self.config.reasoning_failure_start_token)
+            fe = block.find(self.config.reasoning_failure_end_token)
+            summary = block[
+                fs + len(self.config.reasoning_failure_start_token) : fe
+            ].strip()
+        # Otherwise, check for a success summary.
+        elif (
+            self.config.reasoning_success_start_token in block
+            and self.config.reasoning_success_end_token in block
+        ):
+            ss = block.find(self.config.reasoning_success_start_token)
+            se = block.find(self.config.reasoning_success_end_token)
+            summary = block[
+                ss + len(self.config.reasoning_success_start_token) : se
+            ].strip()
+
+        # Reconstruct the text by removing the reasoning block and inserting the summary (if any).
+        new_decoded = (
+            decoded[:start_idx]
+            + (summary if summary else "")
+            + decoded[end_idx + len(end_token) :]
         )
 
-        # More precise KV cache pruning
+        # Re-tokenize the new text.
+        new_input_ids = tokenizer(
+            new_decoded, add_special_tokens=False, return_tensors="pt"
+        ).input_ids.to(input_ids.device)
+        new_attention_mask = torch.ones_like(new_input_ids, dtype=torch.long)
+
+        # Prune the KV cache up to the number of tokens before the reasoning block.
+        # Tokenize the text before the reasoning block to determine the new cutoff.
+        prefix_text = decoded[:start_idx]
+        prefix_ids = tokenizer(
+            prefix_text, add_special_tokens=False, return_tensors="pt"
+        ).input_ids
+        cutoff = prefix_ids.shape[1]
+
         if hasattr(self, "past_key_values") and self.past_key_values is not None:
             self.past_key_values = tuple(
-                tuple(
-                    layer_cache[
-                        :, : marker_indices["start"][0], :
-                    ]  # Precisely slice before reasoning
-                    for layer_cache in layer_pair
-                )
+                tuple(layer_cache[:, :cutoff, :] for layer_cache in layer_pair)
                 for layer_pair in self.past_key_values
             )
-
-        # Create corresponding attention mask
-        new_attention_mask = torch.ones_like(new_input_ids, dtype=torch.long)
 
         return new_input_ids, new_attention_mask
 
@@ -144,7 +145,7 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         **kwargs,
     ) -> CausalLMOutputWithPast:
-        # Simply call the parent class's forward method
+        # Simply call the parent class's forward method.
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
