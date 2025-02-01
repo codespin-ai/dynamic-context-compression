@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from huggingface_hub import login
 from transformers import AutoTokenizer
 from models.custom_llama import CustomLlamaForCausalLM, CustomLlamaConfig
+from textwrap import dedent
 
 
 def is_newly_generated_special_token(
@@ -90,22 +91,25 @@ def main():
     args = parser.parse_args()
 
     # Construct initial prompt with reasoning context
-    full_prompt = f"""Task: {args.prompt}
+    full_prompt = dedent(
+        f"""
+        Task: {args.prompt}
 
-Your task is to reason about the solution:
-1. Break down the problem, and solve it step by step.
-2. Otherwise you must try all possibilities and combinations
-3. Use these EXACT special tokens:
-   - <REASONING_START> at reasoning beginning
-   - <REASONING_SUCCESS_START> if solution found
-   - <REASONING_SUCCESS_END> after solution
-   - <REASONING_FAILURE_START> if unsolvable
-   - <REASONING_FAILURE_END> after failure explanation
-   - <REASONING_END> at reasoning end
+        Your task is to reason about the solution:
+        1. Break down the problem, and solve it step by step.
+        2. Otherwise you must try all possibilities and combinations
+        3. Use these EXACT special tokens:
+           - <REASONING_START> at reasoning beginning
+           - <REASONING_SUCCESS_START> if solution found
+           - <REASONING_SUCCESS_END> after solution
+           - <REASONING_FAILURE_START> if unsolvable
+           - <REASONING_FAILURE_END> after failure explanation
+           - <REASONING_END> at reasoning end
 
-Let's start.
-<REASONING_START>
-"""
+        Let's start.
+        <REASONING_START>
+    """
+    ).strip()
 
     # Tokenize initial input
     inputs = tokenizer(
@@ -178,15 +182,17 @@ Let's start.
                     )
 
                     # Prepare recovery prompt
-                    recovery_prompt = f"""
-Previous attempt failed. Here's the failure explanation:
-{failure_explanation}
+                    recovery_prompt = dedent(
+                        f"""
+                        Previous attempt failed. Here's the failure explanation:
+                        {failure_explanation}
 
-Let's try a different approach to solve: {args.prompt}
+                        Let's try a different approach to solve: {args.prompt}
 
-<REASONING_START>
-Recovering from previous failure. New strategy:
-"""
+                        <REASONING_START>
+                        Recovering from previous failure. New strategy:
+                    """
+                    ).strip()
 
                     # Use model's custom method to prune and reset context
                     recovered_input_ids, recovered_attention_mask = (
