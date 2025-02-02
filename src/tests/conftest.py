@@ -5,7 +5,12 @@ from dynamic_context_compression.models.reasoning_llama import (
     ReasoningLlamaForCausalLM,
     ReasoningLlamaConfig,
 )
+import os
 
+# Set up multi-core processing for tests
+os.environ['OMP_NUM_THREADS'] = '16'  # Match your CPU core count
+os.environ['MKL_NUM_THREADS'] = '16'
+torch.set_float32_matmul_precision('high')
 
 @pytest.fixture(scope="class")
 def llama_model_setup(request):
@@ -19,7 +24,7 @@ def llama_model_setup(request):
         Dict containing tokenizer, model, and other necessary components
     """
     # Specify the model name. (For testing, consider using a smaller model if necessary.)
-    model_name = "meta-llama/Llama-3.2-3B"  # Change to a smaller model if faster testing is needed.
+    model_name = "meta-llama/Llama-3.2-1B"  # Change to a smaller model if faster testing is needed.
 
     # Load the tokenizer from the pre-trained model.
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -44,7 +49,7 @@ def llama_model_setup(request):
     # Load the custom configuration and model.
     config = ReasoningLlamaConfig.from_pretrained(model_name)
     model = ReasoningLlamaForCausalLM.from_pretrained(
-        model_name, config=config, device_map="cpu", torch_dtype=torch.float16
+        model_name, config=config, device_map="cpu", torch_dtype=torch.bfloat16
     )
 
     # Resize model embeddings to include the additional special tokens.
