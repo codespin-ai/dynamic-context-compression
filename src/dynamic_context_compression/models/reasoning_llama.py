@@ -5,10 +5,10 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 # =============================================================================
-# CustomLlamaConfig: Extending the default LlamaConfig to support additional
+# ReasoningLlamaConfig: Extending the default LlamaConfig to support additional
 # special tokens used for reasoning context management.
 # =============================================================================
-class CustomLlamaConfig(LlamaConfig):
+class ReasoningLlamaConfig(LlamaConfig):
     """
     Extended Llama configuration to support reasoning tokens.
 
@@ -18,7 +18,7 @@ class CustomLlamaConfig(LlamaConfig):
       - Failure and success markers within the reasoning block.
 
     Example usage:
-      config = CustomLlamaConfig(
+      config = ReasoningLlamaConfig(
           reasoning_start_token="<REASONING_START>",
           reasoning_end_token="<REASONING_END>",
           reasoning_failure_start_token="<REASONING_FAILURE_START>",
@@ -50,10 +50,10 @@ class CustomLlamaConfig(LlamaConfig):
 
 
 # =============================================================================
-# CustomLlamaForCausalLM: A custom causal language model that adds reasoning
+# ReasoningLlamaForCausalLM: A custom causal language model that adds reasoning
 # context management to the base Llama model.
 # =============================================================================
-class CustomLlamaForCausalLM(LlamaForCausalLM):
+class ReasoningLlamaForCausalLM(LlamaForCausalLM):
     """
     Custom Llama model with advanced reasoning capabilities.
 
@@ -66,7 +66,7 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
 
     Example usage:
       >>> # Assume `tokenizer` and `config` have been initialized properly.
-      >>> model = CustomLlamaForCausalLM(config)
+      >>> model = ReasoningLlamaForCausalLM(config)
       >>> input_text = (
       ...    "Problem: What is 2+2? <REASONING_START> Detailed reasoning... "
       ...    "<REASONING_SUCCESS_START>4<REASONING_SUCCESS_END> <REASONING_END> Final answer is 4."
@@ -76,9 +76,9 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
     """
 
     # Bind this model to the extended configuration class.
-    config_class = CustomLlamaConfig
+    config_class = ReasoningLlamaConfig
 
-    def __init__(self, config: CustomLlamaConfig):
+    def __init__(self, config: ReasoningLlamaConfig):
         # Initialize the parent LlamaForCausalLM with the provided configuration.
         super().__init__(config)
         # Optionally, store additional reasoning-related data here.
@@ -191,12 +191,16 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         # ---------------------------------------------------------------------
         # Step 7: Prune the past_key_values (KV cache) if provided
         # ---------------------------------------------------------------------
-        # Tokenize the text before the reasoning block to determine the cutoff index.
-        prefix_text = decoded[:start_idx]
-        prefix_ids = tokenizer(
-            prefix_text, add_special_tokens=False, return_tensors="pt"
-        ).input_ids
-        cutoff = prefix_ids.shape[1]
+        # Determine the cutoff point BEFORE the reasoning start token
+        reasoning_start_token_id = tokenizer.convert_tokens_to_ids(start_token)
+        start_token_indices = torch.where(input_ids[0] == reasoning_start_token_id)[0]
+
+        # Cut exactly BEFORE the reasoning start token
+        if len(start_token_indices) > 0:
+            cutoff = start_token_indices[0].item()
+        else:
+            # Fallback if token is not found
+            cutoff = input_ids.shape[1]
 
         # Prune past_key_values if provided
         pruned_past_key_values = None

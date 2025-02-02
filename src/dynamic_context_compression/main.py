@@ -3,7 +3,10 @@ import torch
 from dotenv import load_dotenv
 from huggingface_hub import login
 from transformers import AutoTokenizer
-from models.custom_llama import CustomLlamaForCausalLM, CustomLlamaConfig
+from dynamic_context_compression.models.reasoning_llama import (
+    ReasoningLlamaForCausalLM,
+    ReasoningLlamaConfig,
+)
 from textwrap import dedent
 
 
@@ -71,10 +74,10 @@ def main():
     tokenizer.add_special_tokens(special_tokens_dict)
 
     # Create custom config
-    config = CustomLlamaConfig.from_pretrained(model_name)
+    config = ReasoningLlamaConfig.from_pretrained(model_name)
 
     # Initialize custom model for CPU
-    model = CustomLlamaForCausalLM.from_pretrained(
+    model = ReasoningLlamaForCausalLM.from_pretrained(
         model_name, config=config, device_map="cpu", torch_dtype=torch.float32
     )
 
