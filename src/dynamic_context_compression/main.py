@@ -9,41 +9,34 @@ from dynamic_context_compression.models.reasoning_llama import (
 )
 from textwrap import dedent
 import argparse
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def is_newly_generated_special_token(
     decoded_output: str, original_prompt: str, special_tokens: list
 ) -> bool:
     """
-    Determine if a newly generated token is a special token
+    Efficiently determine if a newly generated token is a special token
     and not part of the original prompt.
-
-    Args:
-        decoded_output (str): Newly decoded output
-        original_prompt (str): Original input prompt
-        special_tokens (list): List of special tokens to check
-
-    Returns:
-        bool: Whether the token is a newly generated special token
     """
-    # Remove original prompt from decoded output
-    generated_portion = decoded_output[len(original_prompt) :]
+    generated_portion = decoded_output[len(original_prompt):]
 
-    # Check if any special token is in the generated portion
-    return any(
-        token in generated_portion
-        and generated_portion.index(token)
-        == 0  # Must be at the start of new generation
-        for token in special_tokens
-    )
+    for token in special_tokens:
+        if token in generated_portion and generated_portion.index(token) == 0:
+            return True
+    return False
 
 
-def setup_tokenizer_and_model(model_name: str):
+def setup_tokenizer_and_model(model_name: str, use_gpu: bool = False):
     """
     Set up the tokenizer and model with special reasoning tokens.
 
     Args:
         model_name (str): Name of the model to load
+        use_gpu (bool): Whether to use GPU acceleration
 
     Returns:
         Tuple[AutoTokenizer, ReasoningLlamaForCausalLM]
@@ -66,13 +59,23 @@ def setup_tokenizer_and_model(model_name: str):
     }
     tokenizer.add_special_tokens(special_tokens_dict)
 
+    # Determine device
+    device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
     # Create custom config
     config = ReasoningLlamaConfig.from_pretrained(model_name)
 
-    # Initialize custom model for CPU
+    # Initialize custom model with device and dtype optimization
     model = ReasoningLlamaForCausalLM.from_pretrained(
-        model_name, config=config, device_map="cpu", torch_dtype=torch.float16
+        model_name, 
+        config=config, 
+        device_map="auto" if use_gpu else "cpu", 
+        torch_dtype=torch.float16 if use_gpu else torch.float32
     )
+
+    # Move model to the selected device
+    model = model.to(device)
 
     # Resize token embeddings after adding special tokens
     model.resize_token_embeddings(len(tokenizer))
@@ -81,20 +84,13 @@ def setup_tokenizer_and_model(model_name: str):
 
 
 def generate_reasoning_solution(
-    model, tokenizer, prompt: str, max_recovery_attempts: int = 3
+    model, tokenizer, prompt: str, use_gpu: bool = False, max_recovery_attempts: int = 3
 ):
     """
-    Generate a solution using reasoning mechanism with recovery attempts.
-
-    Args:
-        model (ReasoningLlamaForCausalLM): The reasoning model
-        tokenizer (AutoTokenizer): The tokenizer
-        prompt (str): The problem prompt
-        max_recovery_attempts (int): Maximum number of recovery attempts
-
-    Returns:
-        str: The solution or failure message
+    Generate a solution using reasoning mechanism with advanced token generation.
     """
+    device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+    
     # Special reasoning tokens to track
     special_tokens = [
         "<REASONING_SUCCESS_END>",
@@ -107,145 +103,82 @@ def generate_reasoning_solution(
         f"""
         Task: {prompt}
 
-        Your task is to reason about the solution:
-        1. Break down the problem, and solve it step by step.
-        2. Otherwise you must try all possibilities and combinations
-        3. Use these EXACT special tokens:
-           - <REASONING_START> at reasoning beginning
-           - <REASONING_SUCCESS_START> if solution found
-           - <REASONING_SUCCESS_END> after solution
-           - <REASONING_FAILURE_START> if unsolvable
-           - <REASONING_FAILURE_END> after failure explanation
-           - <REASONING_END> at reasoning end
+        Reasoning Framework:
+        1. Break down the problem systematically
+        2. Generate multiple solution approaches
+        3. Critically evaluate each approach
+        4. Select and justify the most promising solution
 
-        Let's start.
+        Example Problem Solving:
+        Problem: Calculate 17 * 23
         <REASONING_START>
-    """
+        - Multiply systematically 
+        - 17 * 23 = (10 + 7) * (20 + 3)
+        - Distribute: 200 + 30 + 140 + 21
+        - Solution: 391
+        <REASONING_SUCCESS_START>391<REASONING_SUCCESS_END>
+        <REASONING_END>
+
+        Problem Solving Guidelines:
+        - Be thorough and logical
+        - Explain reasoning step-by-step
+        - Use special tokens precisely
+
+        Your Task:
+        <REASONING_START>
+        """
     ).strip()
 
-    print(full_prompt)
+    logger.info(f"Initial Prompt: {full_prompt}")
 
     # Tokenize initial input
     inputs = tokenizer(
         full_prompt, return_tensors="pt", padding=True, add_special_tokens=True
-    )
+    ).to(device)
 
-    # Initialize generation variables
-    generated_ids = inputs.input_ids
-    attention_mask = inputs.attention_mask
-    original_prompt = full_prompt
-    past_key_values = None  # Initialize past key values
+    # Generation parameters optimized for better performance
+    generation_config = {
+        "max_new_tokens": 200,  # Increased to allow more complex reasoning
+        "num_return_sequences": 1,
+        "do_sample": True,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 50,
+        "repetition_penalty": 1.1,
+        "no_repeat_ngram_size": 2,  # Prevent repeating n-grams
+    }
 
-    # Failure recovery mechanism
-    failure_recovery_attempts = 0
+    # Failure recovery attempts with more intelligent generation
+    for attempt in range(max_recovery_attempts):
+        logger.info(f"Reasoning Attempt {attempt + 1}")
 
-    while failure_recovery_attempts < max_recovery_attempts:
-        print(f"\nReasoning Attempt {failure_recovery_attempts + 1}:")
+        # Advanced generation with more sophisticated parameters
+        outputs = model.generate(
+            inputs.input_ids,
+            attention_mask=inputs.attention_mask,
+            pad_token_id=tokenizer.eos_token_id,
+            **generation_config
+        )
 
-        # Generation loop
-        for _ in range(500):  # Limit generation to prevent infinite loops
-            outputs = model.generate(
-                generated_ids,
-                max_new_tokens=1,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id,
-                attention_mask=attention_mask,
-                repetition_penalty=1.0,
-                past_key_values=past_key_values,
-            )
+        # Decode the entire output
+        decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=False)
+        logger.info(f"Generated Output: {decoded_output}")
 
-            # Get the newly generated token
-            new_token = outputs[0, generated_ids.shape[1] :]
+        # Check for reasoning markers and extract solution or handle failure
+        if "<REASONING_SUCCESS_END>" in decoded_output:
+            solution_start = decoded_output.find("<REASONING_SUCCESS_START>") + len("<REASONING_SUCCESS_START>")
+            solution_end = decoded_output.find("<REASONING_SUCCESS_END>")
+            solution = decoded_output[solution_start:solution_end].strip()
+            logger.info(f"Solution Found: {solution}")
+            return solution
 
-            # Decode and print the new token
-            new_token_text = tokenizer.decode(new_token, skip_special_tokens=False)
-            print(new_token_text, end="", flush=True)
+        elif "<REASONING_FAILURE_END>" in decoded_output:
+            failure_start = decoded_output.find("<REASONING_FAILURE_START>") + len("<REASONING_FAILURE_START>")
+            failure_end = decoded_output.find("<REASONING_FAILURE_END>")
+            failure_explanation = decoded_output[failure_start:failure_end].strip()
+            logger.warning(f"Reasoning Failure (Attempt {attempt + 1}): {failure_explanation}")
 
-            # Update generated_ids for next iteration
-            generated_ids = outputs
-
-            # Decode full output
-            decoded_output = tokenizer.decode(generated_ids[0])
-
-            # Advanced special token detection
-            if is_newly_generated_special_token(
-                decoded_output, original_prompt, special_tokens
-            ):
-                if "<REASONING_SUCCESS_END>" in decoded_output:
-                    # Extract solution between success markers
-                    solution_start = decoded_output.find(
-                        "<REASONING_SUCCESS_START>"
-                    ) + len("<REASONING_SUCCESS_START>")
-                    solution_end = decoded_output.find("<REASONING_SUCCESS_END>")
-                    solution = decoded_output[solution_start:solution_end].strip()
-                    print(f"\n\nFinal Solution:\n{solution}")
-                    return solution
-
-                elif "<REASONING_FAILURE_END>" in decoded_output:
-                    # Failure Recovery Mechanism
-                    failure_start = decoded_output.find(
-                        "<REASONING_FAILURE_START>"
-                    ) + len("<REASONING_FAILURE_START>")
-                    failure_end = decoded_output.find("<REASONING_FAILURE_END>")
-                    failure_explanation = decoded_output[
-                        failure_start:failure_end
-                    ].strip()
-
-                    print(
-                        f"\n\nReasoning Failure (Attempt {failure_recovery_attempts + 1}):\n{failure_explanation}"
-                    )
-
-                    # Prepare recovery prompt
-                    recovery_prompt = dedent(
-                        f"""
-                        Previous attempt failed. Here's the failure explanation:
-                        {failure_explanation}
-
-                        Let's try a different approach to solve: {prompt}
-
-                        <REASONING_START>
-                        Recovering from previous failure. New strategy:
-                    """
-                    ).strip()
-
-                    # Use model's custom method to prune and reset context
-                    (
-                        recovered_input_ids,
-                        recovered_attention_mask,
-                        pruned_past_key_values,
-                    ) = model.replace_reasoning_context(
-                        generated_ids, tokenizer, past_key_values
-                    )
-
-                    # Append recovery prompt to pruned context
-                    recovery_input = tokenizer(
-                        recovery_prompt, return_tensors="pt", add_special_tokens=True
-                    )
-
-                    # Combine pruned context with recovery prompt
-                    generated_ids = torch.cat(
-                        [recovered_input_ids, recovery_input.input_ids], dim=1
-                    )
-                    attention_mask = torch.cat(
-                        [recovered_attention_mask, recovery_input.attention_mask], dim=1
-                    )
-                    past_key_values = pruned_past_key_values
-
-                    failure_recovery_attempts += 1
-                    break  # Restart generation loop
-
-            # Stop if EOS token is generated
-            if tokenizer.eos_token_id in outputs[0]:
-                break
-
-        # Exit if max recovery attempts reached
-        if failure_recovery_attempts >= max_recovery_attempts:
-            print("\nFailed to solve the problem after multiple attempts.")
-            return "Unable to solve the problem."
-
-    print("\n")  # New line after response
+    logger.error("Failed to solve the problem after multiple attempts.")
     return "Unable to solve the problem."
 
 
@@ -258,20 +191,19 @@ def main():
     login(token=token)
 
     # Model details
-    model_name = "meta-llama/Llama-3.2-3B"
+    model_name = "meta-llama/Llama-3.2-1B"
 
-    # Setup tokenizer and model
-    tokenizer, model = setup_tokenizer_and_model(model_name)
-
-    # Argparse for command-line prompt
+    # Argument parsing with GPU flag
     parser = argparse.ArgumentParser(description="Reasoning-based Problem Solver")
-    parser.add_argument(
-        "--prompt", type=str, required=True, help="Problem prompt to solve"
-    )
+    parser.add_argument("--prompt", type=str, required=True, help="Problem prompt to solve")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU acceleration")
     args = parser.parse_args()
 
+    # Setup tokenizer and model with optional GPU
+    tokenizer, model = setup_tokenizer_and_model(model_name, use_gpu=args.gpu)
+
     # Generate and print solution
-    solution = generate_reasoning_solution(model, tokenizer, args.prompt)
+    solution = generate_reasoning_solution(model, tokenizer, args.prompt, use_gpu=args.gpu)
     print(f"Final Solution: {solution}")
 
 
