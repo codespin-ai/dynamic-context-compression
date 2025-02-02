@@ -8,6 +8,7 @@ from dynamic_context_compression.models.reasoning_llama import (
     ReasoningLlamaConfig,
 )
 from textwrap import dedent
+import argparse
 
 
 def is_newly_generated_special_token(
@@ -37,28 +38,20 @@ def is_newly_generated_special_token(
     )
 
 
-def main():
-    # Load environment variables
-    load_dotenv()
+def setup_tokenizer_and_model(model_name: str):
+    """
+    Set up the tokenizer and model with special reasoning tokens.
 
-    # Authenticate with Hugging Face
-    token = os.getenv("HUGGINGFACE_TOKEN")
-    login(token=token)
+    Args:
+        model_name (str): Name of the model to load
 
-    # Model details
-    model_name = "meta-llama/Llama-3.2-3B"
-
+    Returns:
+        Tuple[AutoTokenizer, ReasoningLlamaForCausalLM]
+    """
     # Initialize tokenizer with explicit padding
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # Special reasoning tokens to track
-    special_tokens = [
-        "<REASONING_SUCCESS_END>",
-        "<REASONING_FAILURE_END>",
-        "<REASONING_END>",
-    ]
 
     # Add special reasoning tokens
     special_tokens_dict = {
@@ -78,25 +71,41 @@ def main():
 
     # Initialize custom model for CPU
     model = ReasoningLlamaForCausalLM.from_pretrained(
-        model_name, config=config, device_map="cpu", torch_dtype=torch.float32
+        model_name, config=config, device_map="cpu", torch_dtype=torch.float16
     )
 
     # Resize token embeddings after adding special tokens
     model.resize_token_embeddings(len(tokenizer))
 
-    # Argparse for command-line prompt
-    import argparse
+    return tokenizer, model
 
-    parser = argparse.ArgumentParser(description="Reasoning-based Problem Solver")
-    parser.add_argument(
-        "--prompt", type=str, required=True, help="Problem prompt to solve"
-    )
-    args = parser.parse_args()
+
+def generate_reasoning_solution(
+    model, tokenizer, prompt: str, max_recovery_attempts: int = 3
+):
+    """
+    Generate a solution using reasoning mechanism with recovery attempts.
+
+    Args:
+        model (ReasoningLlamaForCausalLM): The reasoning model
+        tokenizer (AutoTokenizer): The tokenizer
+        prompt (str): The problem prompt
+        max_recovery_attempts (int): Maximum number of recovery attempts
+
+    Returns:
+        str: The solution or failure message
+    """
+    # Special reasoning tokens to track
+    special_tokens = [
+        "<REASONING_SUCCESS_END>",
+        "<REASONING_FAILURE_END>",
+        "<REASONING_END>",
+    ]
 
     # Construct initial prompt with reasoning context
     full_prompt = dedent(
         f"""
-        Task: {args.prompt}
+        Task: {prompt}
 
         Your task is to reason about the solution:
         1. Break down the problem, and solve it step by step.
@@ -114,6 +123,8 @@ def main():
     """
     ).strip()
 
+    print(full_prompt)
+
     # Tokenize initial input
     inputs = tokenizer(
         full_prompt, return_tensors="pt", padding=True, add_special_tokens=True
@@ -127,9 +138,8 @@ def main():
 
     # Failure recovery mechanism
     failure_recovery_attempts = 0
-    max_failure_recovery_attempts = 3
 
-    while failure_recovery_attempts < max_failure_recovery_attempts:
+    while failure_recovery_attempts < max_recovery_attempts:
         print(f"\nReasoning Attempt {failure_recovery_attempts + 1}:")
 
         # Generation loop
@@ -171,7 +181,7 @@ def main():
                     solution_end = decoded_output.find("<REASONING_SUCCESS_END>")
                     solution = decoded_output[solution_start:solution_end].strip()
                     print(f"\n\nFinal Solution:\n{solution}")
-                    return  # Exit main function
+                    return solution
 
                 elif "<REASONING_FAILURE_END>" in decoded_output:
                     # Failure Recovery Mechanism
@@ -193,7 +203,7 @@ def main():
                         Previous attempt failed. Here's the failure explanation:
                         {failure_explanation}
 
-                        Let's try a different approach to solve: {args.prompt}
+                        Let's try a different approach to solve: {prompt}
 
                         <REASONING_START>
                         Recovering from previous failure. New strategy:
@@ -231,11 +241,38 @@ def main():
                 break
 
         # Exit if max recovery attempts reached
-        if failure_recovery_attempts >= max_failure_recovery_attempts:
+        if failure_recovery_attempts >= max_recovery_attempts:
             print("\nFailed to solve the problem after multiple attempts.")
-            break
+            return "Unable to solve the problem."
 
     print("\n")  # New line after response
+    return "Unable to solve the problem."
+
+
+def main():
+    # Load environment variables
+    load_dotenv()
+
+    # Authenticate with Hugging Face
+    token = os.getenv("HUGGINGFACE_TOKEN")
+    login(token=token)
+
+    # Model details
+    model_name = "meta-llama/Llama-3.2-3B"
+
+    # Setup tokenizer and model
+    tokenizer, model = setup_tokenizer_and_model(model_name)
+
+    # Argparse for command-line prompt
+    parser = argparse.ArgumentParser(description="Reasoning-based Problem Solver")
+    parser.add_argument(
+        "--prompt", type=str, required=True, help="Problem prompt to solve"
+    )
+    args = parser.parse_args()
+
+    # Generate and print solution
+    solution = generate_reasoning_solution(model, tokenizer, args.prompt)
+    print(f"Final Solution: {solution}")
 
 
 if __name__ == "__main__":
