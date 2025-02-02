@@ -80,8 +80,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
 
         # Invoke the method to replace the reasoning context.
-        new_input_ids, new_attention_mask = self.model.replace_reasoning_context(
-            input_ids, self.tokenizer
+        new_input_ids, new_attention_mask, past_key_values = (
+            self.model.replace_reasoning_context(input_ids, self.tokenizer)
         )
 
         # Define the expected output text after replacement.
@@ -93,6 +93,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         self.assertEqual(decoded_text, expected_text)
         # Assert that the attention mask has the same shape as the new input IDs.
         self.assertEqual(new_attention_mask.shape, new_input_ids.shape)
+        # Assert that past_key_values is None since no cache was provided
+        self.assertIsNone(past_key_values)
 
     def test_replace_reasoning_context_failure(self):
         """
@@ -115,8 +117,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
 
         # Invoke the method to replace the reasoning context.
-        new_input_ids, new_attention_mask = self.model.replace_reasoning_context(
-            input_ids, self.tokenizer
+        new_input_ids, new_attention_mask, past_key_values = (
+            self.model.replace_reasoning_context(input_ids, self.tokenizer)
         )
 
         # Define the expected output text after replacement.
@@ -128,6 +130,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         self.assertEqual(decoded_text, expected_text)
         # Assert that the attention mask has the correct shape.
         self.assertEqual(new_attention_mask.shape, new_input_ids.shape)
+        # Assert that past_key_values is None since no cache was provided
+        self.assertIsNone(past_key_values)
 
     def test_replace_reasoning_context_no_markers(self):
         """
@@ -144,8 +148,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
 
         # Invoke the method.
-        new_input_ids, new_attention_mask = self.model.replace_reasoning_context(
-            input_ids, self.tokenizer
+        new_input_ids, new_attention_mask, past_key_values = (
+            self.model.replace_reasoning_context(input_ids, self.tokenizer)
         )
 
         # Decode the token IDs back into text.
@@ -160,6 +164,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
                 new_attention_mask, torch.ones_like(input_ids, dtype=torch.long)
             )
         )
+        # Assert that past_key_values is None since no cache was provided
+        self.assertIsNone(past_key_values)
 
     def test_replace_reasoning_context_empty_summary(self):
         """
@@ -182,8 +188,8 @@ class TestReplaceReasoningContext(unittest.TestCase):
         input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
 
         # Invoke the method to replace the reasoning context.
-        new_input_ids, new_attention_mask = self.model.replace_reasoning_context(
-            input_ids, self.tokenizer
+        new_input_ids, new_attention_mask, past_key_values = (
+            self.model.replace_reasoning_context(input_ids, self.tokenizer)
         )
 
         # Define the expected output text. Note the extra space where the block was removed.
@@ -195,6 +201,41 @@ class TestReplaceReasoningContext(unittest.TestCase):
         self.assertEqual(decoded_text, expected_text)
         # Assert that the attention mask's shape is correct.
         self.assertEqual(new_attention_mask.shape, new_input_ids.shape)
+        # Assert that past_key_values is None since no cache was provided
+        self.assertIsNone(past_key_values)
+
+    def test_replace_reasoning_context_with_past_key_values(self):
+        """
+        Test that past_key_values are correctly pruned when provided.
+        """
+        input_text = (
+            "Problem: What is 2+2? <REASONING_START> "
+            "<REASONING_SUCCESS_START> 4 <REASONING_SUCCESS_END> <REASONING_END> The answer is 4."
+        )
+        # Convert the input text to token IDs.
+        input_ids = self.tokenizer(input_text, return_tensors="pt").input_ids
+
+        # Create a mock past_key_values (simplified)
+        mock_past_key_values = tuple(
+            (torch.rand(1, 10, 64), torch.rand(1, 10, 64))
+            for _ in range(self.model.config.num_hidden_layers)
+        )
+
+        # Invoke the method to replace the reasoning context with past key values
+        new_input_ids, new_attention_mask, pruned_past_key_values = (
+            self.model.replace_reasoning_context(
+                input_ids, self.tokenizer, past_key_values=mock_past_key_values
+            )
+        )
+
+        # Assert that past_key_values exist and are pruned
+        self.assertIsNotNone(pruned_past_key_values)
+        # Verify the structure of pruned past key values matches the original
+        self.assertEqual(len(pruned_past_key_values), len(mock_past_key_values))
+        # Verify the pruned past key values have a reduced sequence length
+        self.assertLess(
+            pruned_past_key_values[0][0].shape[1], mock_past_key_values[0][0].shape[1]
+        )
 
 
 if __name__ == "__main__":

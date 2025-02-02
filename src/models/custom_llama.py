@@ -1,6 +1,6 @@
 from transformers import LlamaForCausalLM, LlamaConfig
 import torch
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
@@ -88,7 +88,8 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         self,
         input_ids: torch.Tensor,
         tokenizer,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[Tuple[torch.Tensor]]]]:
         """
         Replace the reasoning context within the input with a summary.
 
@@ -104,30 +105,22 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
              inserts the summary in its place.
           6. The new text is re-tokenized to generate updated input IDs and a corresponding
              attention mask.
-          7. Additionally, if the model's KV cache (past_key_values) is set, it prunes
-             the cache to keep only tokens preceding the reasoning block.
-
-        Example:
-          Input:
-            "Problem: What is 2+2? <REASONING_START> Some detailed thought.
-             <REASONING_SUCCESS_START> 4 <REASONING_SUCCESS_END> <REASONING_END> Final answer is 4."
-          Output:
-            New input_ids corresponding to:
-            "Problem: What is 2+2? 4 Final answer is 4."
+          7. If a past_key_values is provided, it prunes the cache to keep only
+             tokens preceding the reasoning block.
 
         Args:
             input_ids (torch.Tensor): Tensor containing the token IDs.
             tokenizer: The tokenizer used to convert between text and tokens.
+            past_key_values (Optional[Tuple[Tuple[torch.Tensor]]]): Optional past key values cache.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple of (new_input_ids, new_attention_mask).
+            Tuple[torch.Tensor, torch.Tensor, Optional[Tuple[Tuple[torch.Tensor]]]]:
+            A tuple of (new_input_ids, new_attention_mask, pruned_past_key_values).
         """
         # ---------------------------------------------------------------------
         # Step 1: Decode the input_ids to a text string while keeping special tokens.
         # ---------------------------------------------------------------------
         decoded = tokenizer.decode(input_ids[0], skip_special_tokens=False)
-        # Debug example:
-        # print("Decoded text:", decoded)
 
         # ---------------------------------------------------------------------
         # Step 2: Locate the reasoning block using the start and end markers.
@@ -137,13 +130,15 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         start_idx = decoded.find(start_token)
         end_idx = decoded.find(end_token)
         if start_idx == -1 or end_idx == -1:
-            # If the reasoning block is not found, simply return the original tensors.
-            return input_ids, torch.ones_like(input_ids, dtype=torch.long)
+            # If the reasoning block is not found, simply return the original tensors and past_key_values.
+            return (
+                input_ids,
+                torch.ones_like(input_ids, dtype=torch.long),
+                past_key_values,
+            )
 
         # Extract the complete reasoning block (from <REASONING_START> to <REASONING_END>).
         block = decoded[start_idx : end_idx + len(end_token)]
-        # Debug example:
-        # print("Found reasoning block:", block)
 
         # ---------------------------------------------------------------------
         # Step 3: Extract the summary from the reasoning block.
@@ -160,8 +155,6 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             summary = block[
                 fs + len(self.config.reasoning_failure_start_token) : fe
             ].strip()
-            # Debug example:
-            # print("Extracted failure summary:", summary)
         # Otherwise, check if the success markers exist.
         elif (
             self.config.reasoning_success_start_token in block
@@ -172,8 +165,6 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             summary = block[
                 ss + len(self.config.reasoning_success_start_token) : se
             ].strip()
-            # Debug example:
-            # print("Extracted success summary:", summary)
 
         # ---------------------------------------------------------------------
         # Step 4: Reconstruct the text by removing the reasoning block and
@@ -184,8 +175,6 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             + (summary if summary else "")  # Insert the summary or nothing.
             + decoded[end_idx + len(end_token) :]  # Text after the reasoning block.
         )
-        # Debug example:
-        # print("Reconstructed text:", new_decoded)
 
         # ---------------------------------------------------------------------
         # Step 5: Re-tokenize the new text to create updated input_ids.
@@ -200,8 +189,7 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
         new_attention_mask = torch.ones_like(new_input_ids, dtype=torch.long)
 
         # ---------------------------------------------------------------------
-        # Step 7: Optionally, prune the model's past_key_values (KV cache) if set.
-        #         The KV cache is sliced to include only tokens before the reasoning block.
+        # Step 7: Prune the past_key_values (KV cache) if provided
         # ---------------------------------------------------------------------
         # Tokenize the text before the reasoning block to determine the cutoff index.
         prefix_text = decoded[:start_idx]
@@ -209,18 +197,17 @@ class CustomLlamaForCausalLM(LlamaForCausalLM):
             prefix_text, add_special_tokens=False, return_tensors="pt"
         ).input_ids
         cutoff = prefix_ids.shape[1]
-        # Debug example:
-        # print("KV cache cutoff index:", cutoff)
 
-        # If the model has a KV cache, prune it to remove tokens from the reasoning block.
-        if hasattr(self, "past_key_values") and self.past_key_values is not None:
-            self.past_key_values = tuple(
+        # Prune past_key_values if provided
+        pruned_past_key_values = None
+        if past_key_values is not None:
+            pruned_past_key_values = tuple(
                 tuple(layer_cache[:, :cutoff, :] for layer_cache in layer_pair)
-                for layer_pair in self.past_key_values
+                for layer_pair in past_key_values
             )
 
-        # Return the updated token IDs and attention mask.
-        return new_input_ids, new_attention_mask
+        # Return the updated token IDs, attention mask, and pruned past_key_values
+        return new_input_ids, new_attention_mask, pruned_past_key_values
 
     def forward(
         self,

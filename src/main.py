@@ -120,6 +120,7 @@ def main():
     generated_ids = inputs.input_ids
     attention_mask = inputs.attention_mask
     original_prompt = full_prompt
+    past_key_values = None  # Initialize past key values
 
     # Failure recovery mechanism
     failure_recovery_attempts = 0
@@ -139,6 +140,7 @@ def main():
                 pad_token_id=tokenizer.eos_token_id,
                 attention_mask=attention_mask,
                 repetition_penalty=1.0,
+                past_key_values=past_key_values,
             )
 
             # Get the newly generated token
@@ -196,8 +198,12 @@ def main():
                     ).strip()
 
                     # Use model's custom method to prune and reset context
-                    recovered_input_ids, recovered_attention_mask = (
-                        model.replace_reasoning_context(generated_ids, tokenizer)
+                    (
+                        recovered_input_ids,
+                        recovered_attention_mask,
+                        pruned_past_key_values,
+                    ) = model.replace_reasoning_context(
+                        generated_ids, tokenizer, past_key_values
                     )
 
                     # Append recovery prompt to pruned context
@@ -212,6 +218,7 @@ def main():
                     attention_mask = torch.cat(
                         [recovered_attention_mask, recovery_input.attention_mask], dim=1
                     )
+                    past_key_values = pruned_past_key_values
 
                     failure_recovery_attempts += 1
                     break  # Restart generation loop
