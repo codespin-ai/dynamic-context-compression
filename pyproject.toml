@@ -4,7 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Jeswin Kumar <jeswinpk@agilehead.com>"]
 readme = "README.md"
-packages = [{include = "dynamic_context_compression"}]
+packages = [{include = "dynamic_context_compression", from = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.12"

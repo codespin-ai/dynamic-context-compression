@@ -1,5 +1,4 @@
 import pytest
-import torch
 
 
 @pytest.mark.usefixtures("llama_model_setup")

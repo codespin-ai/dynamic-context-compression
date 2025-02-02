@@ -1,6 +1,6 @@
 from transformers import LlamaForCausalLM, LlamaConfig
 import torch
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
